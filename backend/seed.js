@@ -67,7 +67,13 @@ const seedData = async () => {
         }
 
         // Add Default Admin
-        await User.create({ username: 'admin', password: 'password123', email: 'admin@bloodlink.com', phone: '0000000000', role: 'HOSPITAL' });
+        await User.create({
+            username: 'admin_thane',
+            password: 'BloodLink@2024Thane',
+            email: 'admin@bloodlink.org',
+            phone: '0000000000',
+            role: 'ADMIN'
+        });
 
         console.log('Database seeded successfully with Hospitals, Blood Banks, and Donors!');
         process.exit();
