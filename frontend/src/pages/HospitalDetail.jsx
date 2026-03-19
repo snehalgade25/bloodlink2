@@ -8,13 +8,21 @@ import {
     Clock,
     ArrowLeft,
     Droplet,
-    ShieldCheck
+    ShieldCheck,
+    AlertTriangle,
+    HeartHandshake,
+    CheckCircle,
+    Loader2
 } from 'lucide-react';
 
 const HospitalDetail = () => {
     const { id } = useParams();
     const [h, setH] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [requests, setRequests] = useState([]);
+    const [donorProfile, setDonorProfile] = useState(null);
+    const user = JSON.parse(localStorage.getItem('user'));
+
 
     useEffect(() => {
         fetchHospital();
@@ -24,12 +32,42 @@ const HospitalDetail = () => {
         try {
             const res = await axios.get(`http://localhost:5000/api/hospital/${id}`);
             setH(res.data);
+            
+            // Also fetch active requests for this hospital
+            const requestsRes = await axios.get(`http://localhost:5000/api/my-requests/${res.data.name}`);
+            // Only show requests that match user blood group (if donor) and are Open
+            if (user?.role === 'DONOR') {
+                const profileRes = await axios.get(`http://localhost:5000/api/auth/my-profile/${user.username}`);
+                setDonorProfile(profileRes.data);
+                setRequests(requestsRes.data.filter(r => 
+                    r.status === 'Open' && 
+                    r.bloodGroup.toLowerCase() === profileRes.data.bloodGroup.toLowerCase()
+                ));
+            } else {
+                setRequests(requestsRes.data.filter(r => r.status === 'Open'));
+            }
         } catch (err) {
             console.error(err);
         } finally {
             setLoading(false);
         }
     };
+
+    const handleVolunteer = async (requestId) => {
+        try {
+            await axios.post(`http://localhost:5000/api/request/${requestId}/volunteer`, {
+                username: user.username
+            });
+            // Refresh to update status
+            fetchHospital();
+        } catch (err) {
+            alert(err.response?.data?.error || 'Failed to volunteer');
+        }
+    };
+
+    const isVolunteered = (request) => request.volunteers?.some(v => v.username === user?.username);
+    const getVolunteerStatus = (request) => request.volunteers?.find(v => v.username === user?.username)?.status;
+
 
     if (loading) return (
         <div className="flex justify-center items-center h-64">
@@ -110,10 +148,55 @@ const HospitalDetail = () => {
                             <DetailedStock label="AB Positive" value={h.unitsAB} />
                         </div>
 
-                        <button className="w-full mt-8 bg-red-600 text-white font-bold py-3 rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-200">
+                        <Link to="/request" className="w-full mt-8 bg-red-600 text-white font-bold py-3 rounded-xl hover:bg-red-700 transition-all shadow-lg shadow-red-200 flex items-center justify-center">
                             Request from this Hospital
-                        </button>
+                        </Link>
                     </div>
+
+                    {/* Active Emergency Requests for this Hospital */}
+                    {requests.length > 0 && (
+                        <div className="mt-8 space-y-4">
+                            <h3 className="text-xl font-extrabold text-gray-800 flex items-center">
+                                <AlertTriangle className="w-6 h-6 mr-2 text-red-600 animate-pulse" />
+                                Active Emergencies
+                            </h3>
+                            <div className="space-y-4">
+                                {requests.map(request => (
+                                    <div key={request._id} className="bg-white border-2 border-red-50 rounded-2xl p-5 shadow-md relative overflow-hidden">
+                                        <div className="flex justify-between items-start mb-3">
+                                            <div className="bg-red-600 text-white px-3 py-1 rounded-lg text-xs font-black">
+                                                {request.bloodGroup}
+                                            </div>
+                                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{new Date(request.createdAt).toLocaleDateString()}</span>
+                                        </div>
+                                        <p className="text-sm text-gray-600 font-bold mb-4 line-clamp-2">{request.reason || 'Urgent requirement at our facility.'}</p>
+                                        
+                                        {user?.role === 'DONOR' ? (
+                                            <button
+                                                disabled={isVolunteered(request)}
+                                                onClick={() => handleVolunteer(request._id)}
+                                                className={`w-full py-3 rounded-xl font-black text-xs flex items-center justify-center space-x-2 transition-all active:scale-95 ${
+                                                    isVolunteered(request)
+                                                        ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+                                                        : 'bg-red-600 text-white hover:bg-red-700 shadow-lg shadow-red-100'
+                                                }`}
+                                            >
+                                                {isVolunteered(request) ? (
+                                                    <><CheckCircle className="w-4 h-4" /><span>Volunteered ({getVolunteerStatus(request)})</span></>
+                                                ) : (
+                                                    <><HeartHandshake className="w-4 h-4" /><span>Volunteer Now</span></>
+                                                )}
+                                            </button>
+                                        ) : (
+                                            <div className="text-xs font-black text-red-500 uppercase tracking-tighter text-center bg-red-50 py-2 rounded-lg">
+                                                Match needed: {request.bloodGroup}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

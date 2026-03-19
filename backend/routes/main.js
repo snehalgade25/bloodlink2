@@ -72,12 +72,47 @@ router.post('/camps', async (req, res) => {
     }
 });
 
-// Process donation pledge (Optional: can be used to log specific donation events)
+// Process donation pledge (Intent)
 router.post('/donate', async (req, res) => {
     try {
-        // Just log the intent for now, don't create a new donor record
         console.log('Donation intent received for:', req.body.username || req.body.name);
         res.status(200).json({ message: 'Donation intent logged successfully' });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+// Process completed donation (Logged from Dashboard/Hospital)
+router.post('/donations/log', async (req, res) => {
+    try {
+        const { username, hospitalName, date } = req.body;
+        console.log('Donation logged for:', username, hospitalName);
+        
+        const donor = await Donor.findOne({ username });
+        if (!donor) return res.status(404).json({ error: 'Donor not found' });
+
+        const donationDate = date ? new Date(date) : new Date();
+
+        // Check buffer period (90 days)
+        if (donor.donations && donor.donations.length > 0) {
+            const sortedDonations = [...donor.donations].sort((a, b) => new Date(b.date) - new Date(a.date));
+            const lastDonation = new Date(sortedDonations[0].date);
+            const bufferEnds = new Date(lastDonation.getTime() + 90 * 24 * 60 * 60 * 1000);
+            
+            if (donationDate < bufferEnds) {
+                 return res.status(400).json({ error: 'Buffer period not completed. You cannot donate yet.' });
+            }
+        }
+
+        donor.donations.push({
+            date: donationDate,
+            hospitalName: hospitalName,
+            status: 'Completed'
+        });
+
+        await donor.save();
+
+        res.status(200).json({ message: 'Donation logged successfully', donor });
     } catch (err) {
         res.status(400).json({ error: err.message });
     }
@@ -142,7 +177,7 @@ router.get('/matching-requests/:bloodGroup', async (req, res) => {
         const { bloodGroup } = req.params;
         // Find matching requests (case-insensitive)
         const requests = await BloodRequest.find({
-            bloodGroup: { $regex: new RegExp(`^${bloodGroup.replace('+', '\\+')}$`, 'i') },
+            bloodGroup: { $regex: new RegExp(`^${bloodGroup.replace(/\+/g, '\\+')}$`, 'i') },
             status: 'Open'
         }).sort({ createdAt: -1 });
 
@@ -226,6 +261,85 @@ router.delete('/camps/:id/register', async (req, res) => {
         camp.registeredDonors = camp.registeredDonors.filter(u => u !== username);
         await camp.save();
         res.json({ message: 'Unregistered successfully', camp });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Volunteer for an emergency request
+router.post('/request/:id/volunteer', async (req, res) => {
+    try {
+        const { username } = req.body;
+        const [request, donor] = await Promise.all([
+            BloodRequest.findById(req.params.id),
+            Donor.findOne({ username })
+        ]);
+
+        if (!request) return res.status(404).json({ error: 'Request not found' });
+        if (!donor) return res.status(404).json({ error: 'Donor profile not found' });
+
+        // Check buffer period (90 days)
+        if (donor.donations && donor.donations.length > 0) {
+            const sortedDonations = [...donor.donations].sort((a, b) => new Date(b.date) - new Date(a.date));
+            const lastDonation = new Date(sortedDonations[0].date);
+            const bufferEnds = new Date(lastDonation.getTime() + 90 * 24 * 60 * 60 * 1000);
+            
+            if (new Date() < bufferEnds) {
+                const daysLeft = Math.ceil((bufferEnds - new Date()) / (1000 * 60 * 60 * 24));
+                return res.status(400).json({ error: `Rest period active. You can donate again in ${daysLeft} days.` });
+            }
+        }
+
+        const alreadyVolunteered = request.volunteers.some(v => v.username === username);
+        if (alreadyVolunteered) return res.status(400).json({ error: 'You have already volunteered for this request' });
+
+        request.volunteers.push({ username, status: 'Pending' });
+        await request.save();
+        res.json({ message: 'Volunteered successfully', request });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Hospital: Update volunteer status
+router.patch('/request/:requestId/volunteer/:username', async (req, res) => {
+    try {
+        const { status } = req.body; // 'Accepted', 'Completed', 'Rejected'
+        const { requestId, username } = req.params;
+        const request = await BloodRequest.findById(requestId);
+        if (!request) return res.status(404).json({ error: 'Request not found' });
+
+        const volunteer = request.volunteers.find(v => v.username === username);
+        if (!volunteer) return res.status(404).json({ error: 'Volunteer not found' });
+
+        volunteer.status = status;
+        await request.save();
+        
+        // If status is 'Completed', also log it in the Donor's profile
+        if (status === 'Completed') {
+             const donor = await Donor.findOne({ username });
+             if (donor) {
+                 donor.donations.push({
+                     date: new Date(),
+                     hospitalName: request.hospitalName,
+                     status: 'Completed'
+                 });
+                 await donor.save();
+             }
+        }
+
+        res.json({ message: `Volunteer status updated to ${status}`, request });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Hospital: Fetch their own requests with volunteers
+router.get('/my-requests/:hospitalName', async (req, res) => {
+    try {
+        const { hospitalName } = req.params;
+        const requests = await BloodRequest.find({ hospitalName }).sort({ createdAt: -1 });
+        res.json(requests);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

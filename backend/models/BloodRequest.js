@@ -6,7 +6,12 @@ const BloodRequestSchema = new mongoose.Schema({
     hospitalName: { type: String },
     location: { type: String },
     reason: { type: String },
-    status: { type: String, default: 'Open' }
+    status: { type: String, default: 'Open' },
+    volunteers: [{
+        username: { type: String, required: true },
+        status: { type: String, enum: ['Pending', 'Accepted', 'Completed', 'Rejected'], default: 'Pending' },
+        registeredAt: { type: Date, default: Date.now }
+    }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('BloodRequest', BloodRequestSchema);

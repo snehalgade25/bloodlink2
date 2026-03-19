@@ -11,12 +11,13 @@ const EmergencyRequests = () => {
     useEffect(() => {
         const fetchDonorAndRequests = async () => {
             try {
-                // 1. Fetch donor profile to get blood group
+                // 1. Fetch donor profile
                 const donorRes = await axios.get(`http://localhost:5000/api/auth/my-profile/${user.username}`);
                 setDonorInfo(donorRes.data);
 
                 // 2. Fetch matching requests
-                const requestsRes = await axios.get(`http://localhost:5000/api/matching-requests/${donorRes.data.bloodGroup}`);
+                const encodedBloodGroup = encodeURIComponent(donorRes.data.bloodGroup);
+                const requestsRes = await axios.get(`http://localhost:5000/api/matching-requests/${encodedBloodGroup}`);
                 setRequests(requestsRes.data);
             } catch (err) {
                 console.error("Error fetching requests:", err);
@@ -26,9 +27,43 @@ const EmergencyRequests = () => {
         };
 
         fetchDonorAndRequests();
-        const interval = setInterval(fetchDonorAndRequests, 10000); // Polling every 10s
+        const interval = setInterval(fetchDonorAndRequests, 10000);
         return () => clearInterval(interval);
     }, [user.username]);
+
+    // Calculate rest period
+    let isBufferActive = false;
+    let bufferEndDate = null;
+    let daysLeft = 0;
+
+    if (donorInfo && donorInfo.donations && donorInfo.donations.length > 0) {
+        const sorted = [...donorInfo.donations].sort((a,b) => new Date(b.date) - new Date(a.date));
+        const lastDate = new Date(sorted[0].date);
+        bufferEndDate = new Date(lastDate.getTime() + 90 * 24 * 60 * 60 * 1000);
+        if (new Date() < bufferEndDate) {
+            isBufferActive = true;
+            daysLeft = Math.ceil((bufferEndDate - new Date()) / (1000 * 60 * 60 * 24));
+        }
+    }
+
+    const handleVolunteer = async (requestId) => {
+        try {
+            await axios.post(`http://localhost:5000/api/request/${requestId}/volunteer`, {
+                username: user.username
+            });
+            // Update local state to reflect volunteering
+            setRequests(prev => prev.map(r => 
+                r._id === requestId 
+                    ? { ...r, volunteers: [...(r.volunteers || []), { username: user.username, status: 'Pending' }] }
+                    : r
+            ));
+        } catch (err) {
+            alert(err.response?.data?.error || 'Failed to volunteer');
+        }
+    };
+
+    const isVolunteered = (request) => request.volunteers?.some(v => v.username === user.username);
+    const getVolunteerStatus = (request) => request.volunteers?.find(v => v.username === user.username)?.status;
 
     if (loading) {
         return (
@@ -120,13 +155,36 @@ const EmergencyRequests = () => {
                                         </div>
                                     )}
 
-                                    <div className="pt-2">
+                                    <div className="pt-2 flex flex-col md:flex-row gap-3">
                                         <button
                                             onClick={() => window.open(`tel:${request.contactInfo}`)}
-                                            className="w-full md:w-auto px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-black rounded-xl shadow-lg shadow-red-100 transition-all flex items-center justify-center space-x-2 active:scale-95"
+                                            className="flex-1 px-8 py-3 bg-white border-2 border-red-600 text-red-600 font-black rounded-xl hover:bg-red-50 transition-all flex items-center justify-center space-x-2 active:scale-95"
                                         >
                                             <Phone className="w-4 h-4" />
-                                            <span>Contact Hospital Now</span>
+                                            <span>Contact Hospital</span>
+                                        </button>
+
+                                        <button
+                                            disabled={isVolunteered(request) || isBufferActive}
+                                            onClick={() => handleVolunteer(request._id)}
+                                            title={isBufferActive ? `Rest period active (${daysLeft} days remaining)` : ''}
+                                            className={`flex-1 px-8 py-3 font-black rounded-xl shadow-lg transition-all flex items-center justify-center space-x-2 active:scale-95 ${
+                                                isVolunteered(request)
+                                                    ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+                                                    : isBufferActive
+                                                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200 shadow-none'
+                                                    : 'bg-red-600 text-white hover:bg-red-700 shadow-red-100'
+                                            }`}
+                                        >
+                                            <Heart className={`w-4 h-4 ${isVolunteered(request) ? 'fill-current' : ''}`} />
+                                            <span>
+                                                {isVolunteered(request) 
+                                                    ? `Volunteered (${getVolunteerStatus(request)})` 
+                                                    : isBufferActive
+                                                    ? 'Rest Period Active'
+                                                    : 'Volunteer to Donate'
+                                                }
+                                            </span>
                                         </button>
                                     </div>
                                 </div>
