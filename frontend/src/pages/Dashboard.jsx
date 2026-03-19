@@ -68,16 +68,27 @@ const Dashboard = () => {
         }
     }, [user?.username]);
 
+    const [externalRequestsCount, setExternalRequestsCount] = useState(0);
+
     const fetchHospitalRequests = async () => {
         try {
             setRequestsLoading(true);
-            // First get the hospital profile to get its real name
             const profileRes = await axios.get(`http://localhost:5000/api/auth/my-stock/${user.username}`);
             const hName = profileRes.data.name;
             setProfile(profileRes.data);
             
-            const res = await axios.get(`http://localhost:5000/api/my-requests/${hName}`);
-            setMyRequests(res.data);
+            // 1. Fetch MY requests (to show volunteers for my broadcasts)
+            const myRes = await axios.get(`http://localhost:5000/api/my-requests/${hName}`);
+            setMyRequests(myRes.data);
+
+            // 2. Fetch ALL broadcasts (to count requirements from OTHER hospitals)
+            const allRes = await axios.get(`http://localhost:5000/api/requests/all`);
+            const others = allRes.data.filter(r => 
+                r.hospitalName !== hName && 
+                r.status?.toLowerCase() !== 'completed' &&
+                !(r.volunteers?.some(v => v.username === user.username))
+            );
+            setExternalRequestsCount(others.length);
         } catch (err) {
             console.error('Error fetching hospital requests:', err);
         } finally {
@@ -104,8 +115,15 @@ const Dashboard = () => {
             
             // Also fetch matching requests for the dashboard
             const encodedBloodGroup = encodeURIComponent(res.data.bloodGroup);
-            const matchingRes = await axios.get(`http://localhost:5000/api/matching-requests/${encodedBloodGroup}`);
-            setMatchingRequests(matchingRes.data);
+            const matchingRes = await axios.get('http://localhost:5000/api/requests/all');
+            const allRequests = matchingRes.data || [];
+            
+            // Filter by matching blood group AND not already volunteered
+            const matching = allRequests.filter(r => 
+                r.bloodGroup === res.data.bloodGroup && 
+                !r.volunteers?.some(v => v.username === user.username)
+            );
+            setMatchingRequests(matching);
         } catch (err) {
             console.error('Error fetching profile/requests:', err);
         }
@@ -123,8 +141,8 @@ const Dashboard = () => {
         }
     };
 
-    const isVolunteered = (request) => request.volunteers?.some(v => v.username === user.username);
-    const getVolunteerStatus = (request) => request.volunteers?.find(v => v.username === user.username)?.status;
+    const isVolunteered = (request) => request.volunteers?.some(v => v.username.toLowerCase() === user.username.toLowerCase());
+    const getVolunteerStatus = (request) => request.volunteers?.find(v => v.username.toLowerCase() === user.username.toLowerCase())?.status;
 
     const fetchCamps = async () => {
         try {
@@ -202,7 +220,31 @@ const Dashboard = () => {
         let isBufferActive = false;
         let bufferEndDate = null;
         let daysLeft = 0;
-        let priorityHospitals = [];
+        let priorityCards = [];
+
+        // Generate unique card number from username + hospital
+        const generateCardNumber = (username, hospital) => {
+            let hash = 0;
+            const str = `${username}-${hospital}-BLOODLINK`;
+            for (let i = 0; i < str.length; i++) {
+                const char = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash;
+            }
+            const num = Math.abs(hash);
+            const part1 = String(num).slice(0, 4).padStart(4, '0');
+            const part2 = String(num).slice(4, 8).padStart(4, '0');
+            const part3 = String(num).slice(8, 12).padStart(4, '0');
+            const checkDigit = (parseInt(part1) + parseInt(part2) + parseInt(part3)) % 97;
+            return `BL-${part1}-${part2}-${part3}-${String(checkDigit).padStart(2, '0')}`;
+        };
+
+        const getCardTier = (count) => {
+            if (count >= 8) return { tier: 'Elite', color: 'from-purple-600 via-violet-500 to-indigo-600', textColor: 'text-purple-900', discount: '15%', icon: '👑', bgAccent: 'bg-purple-300/20', labelColor: 'text-purple-200', borderColor: 'border-purple-300/30' };
+            if (count >= 5) return { tier: 'Gold', color: 'from-yellow-600 via-amber-500 to-orange-500', textColor: 'text-yellow-900', discount: '10%', icon: '⭐', bgAccent: 'bg-orange-300/20', labelColor: 'text-orange-200', borderColor: 'border-orange-300/30' };
+            if (count >= 2) return { tier: 'Silver', color: 'from-slate-400 via-gray-300 to-slate-500', textColor: 'text-slate-800', discount: '5%', icon: '🥈', bgAccent: 'bg-white/20', labelColor: 'text-slate-200', borderColor: 'border-white/30' };
+            return null;
+        };
 
         if (profile && profile.donations && profile.donations.length > 0) {
             const sorted = [...profile.donations].sort((a,b) => new Date(b.date) - new Date(a.date));
@@ -219,69 +261,206 @@ const Dashboard = () => {
                     hCounts[d.hospitalName] = (hCounts[d.hospitalName] || 0) + 1;
                 }
             });
-            priorityHospitals = Object.keys(hCounts).filter(h => hCounts[h] >= 2);
+            
+            // Build priority cards based on donation count per hospital
+            Object.entries(hCounts).forEach(([hospital, count]) => {
+                const tierInfo = getCardTier(count);
+                if (tierInfo) {
+                    priorityCards.push({
+                        hospital,
+                        count,
+                        ...tierInfo,
+                        cardNumber: generateCardNumber(user.username, hospital),
+                        holderName: profile?.name || user.username,
+                        bloodGroup: profile?.bloodGroup || 'N/A',
+                        issueDate: sorted.find(d => d.hospitalName === hospital)?.date || new Date()
+                    });
+                }
+            });
+            
+            // Sort: Elite first, then Gold, then Silver
+            priorityCards.sort((a, b) => {
+                const order = { 'Elite': 3, 'Gold': 2, 'Silver': 1 };
+                return (order[b.tier] || 0) - (order[a.tier] || 0);
+            });
         }
+
+        // Download card as PNG
+        const downloadCard = (card) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 600;
+            canvas.height = 340;
+            const ctx = canvas.getContext('2d');
+
+            // Background gradient
+            const colors = {
+                'Elite': ['#7C3AED', '#8B5CF6', '#4C1D95'],
+                'Gold': ['#EAB308', '#F97316', '#C2410C'],
+                'Silver': ['#94A3B8', '#CBD5E1', '#64748B']
+            };
+            const [c1, c2, c3] = colors[card.tier] || colors['Silver'];
+            const grad = ctx.createLinearGradient(0, 0, 600, 340);
+            grad.addColorStop(0, c1);
+            grad.addColorStop(0.5, c2);
+            grad.addColorStop(1, c3);
+            ctx.fillStyle = grad;
+            ctx.roundRect(0, 0, 600, 340, 20);
+            ctx.fill();
+
+            // Subtle pattern overlay
+            ctx.fillStyle = 'rgba(255,255,255,0.05)';
+            for (let i = 0; i < 600; i += 30) {
+                ctx.beginPath();
+                ctx.arc(i, 170, 80, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Top: BLOODLINK logo
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.font = 'bold 14px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText('BLOODLINK', 30, 40);
+
+            // Priority Donor badge
+            ctx.fillStyle = 'rgba(255,255,255,0.7)';
+            ctx.font = '10px Arial';
+            ctx.textAlign = 'right';
+            ctx.fillText('PRIORITY DONOR CARD', 570, 35);
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.font = 'bold 22px Arial';
+            ctx.fillText(`${card.tier.toUpperCase()} TIER`, 570, 58);
+
+            // Hospital name
+            ctx.fillStyle = 'rgba(255,255,255,1)';
+            ctx.font = 'bold 24px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(card.hospital, 30, 90);
+
+            // Card number
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.font = '16px monospace';
+            ctx.fillText(card.cardNumber, 30, 140);
+
+            // Holder details
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.font = '10px Arial';
+            ctx.fillText('CARD HOLDER', 30, 190);
+            ctx.fillStyle = 'rgba(255,255,255,1)';
+            ctx.font = 'bold 18px Arial';
+            ctx.fillText(card.holderName, 30, 212);
+
+            // Blood group
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.font = '10px Arial';
+            ctx.fillText('BLOOD GROUP', 300, 190);
+            ctx.fillStyle = 'rgba(255,255,255,1)';
+            ctx.font = 'bold 18px Arial';
+            ctx.fillText(card.bloodGroup, 300, 212);
+
+            // Donations
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.font = '10px Arial';
+            ctx.fillText('DONATIONS', 450, 190);
+            ctx.fillStyle = 'rgba(255,255,255,1)';
+            ctx.font = 'bold 18px Arial';
+            ctx.fillText(`${card.count}`, 450, 212);
+
+            // Benefits bar
+            ctx.fillStyle = 'rgba(0,0,0,0.15)';
+            ctx.roundRect(20, 250, 560, 70, 12);
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.font = 'bold 11px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(`✦ ${card.discount} Discount on Emergency Services  ·  Priority Treatment  ·  Fast-Track Access`, 300, 275);
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.font = '9px Arial';
+            ctx.fillText(`Valid from ${new Date(card.issueDate).toLocaleDateString()} · Verified by BloodLink`, 300, 298);
+
+            const link = document.createElement('a');
+            link.download = `BloodLink_${card.tier}_Card_${card.holderName.replace(/\s+/g, '_')}.png`;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        };
 
         return (
             <div className="space-y-8 animate-in fade-in duration-500">
-                {/* Buffer Period Warning */}
-                {isBufferActive && (
-                    <div className="bg-orange-50 border-l-4 border-orange-500 p-4 rounded-r-xl shadow-sm flex items-center justify-between">
-                        <div>
-                            <h3 className="text-orange-800 font-bold text-lg">Rest Period Active</h3>
-                            <p className="text-orange-700 text-sm mt-1">
-                                Thank you for your recent donation! To protect your health, you can donate again in <strong>{daysLeft} days</strong> (on {bufferEndDate.toLocaleDateString()}).
-                            </p>
+                {/* Hero Profile Card */}
+                <div className="bg-gradient-to-br from-red-700 via-red-600 to-rose-700 rounded-3xl p-8 text-white relative overflow-hidden">
+                    <div className="absolute -right-16 -top-16 w-64 h-64 bg-white/10 rounded-full blur-3xl"></div>
+                    <div className="absolute -left-10 -bottom-10 w-48 h-48 bg-red-900/30 rounded-full blur-2xl"></div>
+                    <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+                        <div className="flex items-center space-x-5">
+                            <div className="w-16 h-16 rounded-2xl bg-white/15 border border-white/25 flex items-center justify-center backdrop-blur-sm overflow-hidden">
+                                <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${user?.username}`} alt="" className="w-full h-full" />
+                            </div>
+                            <div>
+                                <p className="text-white/60 text-[10px] font-black uppercase tracking-[0.2em] mb-1">Welcome Back</p>
+                                <h1 className="text-2xl font-black tracking-tight">{profile?.name || user?.username}</h1>
+                                <p className="text-white/70 text-sm font-bold mt-0.5">Donor · {profile?.bloodGroup || 'N/A'}</p>
+                            </div>
                         </div>
-                        <Clock className="w-8 h-8 text-orange-400 opacity-80" />
+                        <div className="flex flex-wrap gap-4">
+                            <div className="bg-white/15 backdrop-blur-sm border border-white/15 rounded-2xl px-5 py-3 text-center min-w-[100px]">
+                                <p className="text-2xl font-black">{profile?.donations?.length || 0}</p>
+                                <p className="text-[10px] text-white/60 font-bold uppercase tracking-wider">Donations</p>
+                            </div>
+                            <div className="bg-white/15 backdrop-blur-sm border border-white/15 rounded-2xl px-5 py-3 text-center min-w-[100px]">
+                                <p className="text-2xl font-black">{myRegistered.length}</p>
+                                <p className="text-[10px] text-white/60 font-bold uppercase tracking-wider">Camps</p>
+                            </div>
+                            <div className="bg-white/15 backdrop-blur-sm border border-white/15 rounded-2xl px-5 py-3 text-center min-w-[100px]">
+                                <p className="text-2xl font-black">{matchingRequests.length}</p>
+                                <p className="text-[10px] text-white/60 font-bold uppercase tracking-wider">Alerts</p>
+                            </div>
+                            <div className={`backdrop-blur-sm border rounded-2xl px-5 py-3 text-center min-w-[100px] ${isBufferActive ? 'bg-yellow-400/20 border-yellow-300/30' : 'bg-emerald-400/25 border-emerald-300/30'}`}>
+                                <p className="text-2xl font-black">{isBufferActive ? `${daysLeft}d` : '✓'}</p>
+                                <p className="text-[10px] text-white/60 font-bold uppercase tracking-wider">{isBufferActive ? 'Rest Left' : 'Eligible'}</p>
+                            </div>
+                        </div>
                     </div>
-                )}
+                    {isBufferActive && (
+                        <div className="relative z-10 mt-5 bg-white/10 border border-white/15 rounded-xl px-5 py-3 flex items-center justify-between">
+                            <p className="text-white/90 text-sm font-bold"><Clock className="w-4 h-4 inline mr-2 opacity-70" />Rest period active — you can donate again on <strong className="text-white">{bufferEndDate.toLocaleDateString()}</strong></p>
+                        </div>
+                    )}
+                </div>
 
                 {/* Emergency Matching Requests */}
-                {matchingRequests.length > 0 && (
+                {matchingRequests.filter(r => !isVolunteered(r)).length > 0 && (
                     <div className="space-y-4">
                         <div className="flex items-center justify-between">
-                            <h2 className="text-xl font-bold text-gray-800 flex items-center space-x-2">
+                            <h2 className="text-lg font-black text-gray-800 flex items-center space-x-2">
                                 <AlertTriangle className="w-5 h-5 text-red-600 animate-pulse" />
                                 <span>Emergency Needs for {profile?.bloodGroup}</span>
                             </h2>
-                            <Link to="/emergency-requests" className="text-sm font-black text-red-600 hover:underline">
-                                View Feed
-                            </Link>
+                            <Link to="/emergency-requests" className="text-sm font-black text-red-600 hover:underline">View All →</Link>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {matchingRequests.slice(0, 3).map(request => (
-                                <div key={request._id} className="bg-white border-2 border-red-50 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all relative overflow-hidden group">
-                                    <div className="absolute top-0 right-0 w-16 h-16 bg-red-50 rounded-bl-full -mr-4 -mt-4 opacity-50"></div>
+                            {matchingRequests.filter(r => !isVolunteered(r)).slice(0, 3).map(request => (
+                                <div key={request._id} className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-lg transition-all relative overflow-hidden group">
+                                    <div className="absolute top-0 right-0 w-20 h-20 bg-gradient-to-bl from-red-50 to-transparent rounded-bl-full opacity-80"></div>
                                     <div className="flex justify-between items-start mb-4">
-                                        <div className="bg-red-600 text-white p-2 rounded-xl">
+                                        <div className="bg-red-600 text-white p-2.5 rounded-xl shadow-lg shadow-red-100">
                                             <Droplet className="w-5 h-5 fill-current" />
                                         </div>
-                                        <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{new Date(request.createdAt).toLocaleDateString()}</span>
+                                        <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest bg-gray-50 px-2 py-1 rounded-lg">{new Date(request.createdAt).toLocaleDateString()}</span>
                                     </div>
-                                    <h3 className="font-black text-gray-800 text-lg mb-1">{request.hospitalName || 'Quick Broadcast'}</h3>
-                                    <p className="text-gray-500 text-xs font-bold mb-4 flex items-center"><MapPin className="w-3 h-3 mr-1" /> {request.location || 'Thane'}</p>
-                                    
+                                    <h3 className="font-black text-gray-800 text-base mb-1">{request.hospitalName || 'Quick Broadcast'}</h3>
+                                    <p className="text-gray-400 text-xs font-bold mb-5 flex items-center"><MapPin className="w-3 h-3 mr-1" /> {request.location || 'Thane'}</p>
                                     <button
                                         disabled={isVolunteered(request) || isBufferActive}
                                         onClick={() => handleVolunteer(request._id)}
                                         title={isBufferActive ? `Rest period active (${daysLeft} days remaining)` : ''}
                                         className={`w-full py-3 rounded-xl font-black text-xs flex items-center justify-center space-x-2 transition-all active:scale-95 ${
-                                            isVolunteered(request)
-                                                ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
-                                                : isBufferActive
-                                                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
-                                                : 'bg-red-600 text-white hover:bg-red-700 shadow-lg shadow-red-100'
+                                            isVolunteered(request) ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+                                            : isBufferActive ? 'bg-gray-50 text-gray-400 cursor-not-allowed border border-gray-100'
+                                            : 'bg-gray-900 text-white hover:bg-black shadow-lg'
                                         }`}
                                     >
                                         <HeartHandshake className="w-4 h-4" />
-                                        <span>
-                                            {isVolunteered(request) 
-                                                ? `Volunteered (${getVolunteerStatus(request)})` 
-                                                : isBufferActive 
-                                                ? 'Rest Period Active' 
-                                                : 'Volunteer Now'}
-                                        </span>
+                                        <span>{isVolunteered(request) ? `Volunteered (${getVolunteerStatus(request)})` : isBufferActive ? 'Rest Period Active' : 'Volunteer Now'}</span>
                                     </button>
                                 </div>
                             ))}
@@ -289,12 +468,207 @@ const Dashboard = () => {
                     </div>
                 )}
 
-                {/* Donor Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <Link to="/stock"><StatCard icon={Users} label="Total Donors" value={stats?.totalDonors || 0} trend="Active" color="text-blue-600" bg="bg-blue-50" /></Link>
-                    <Link to="/camps"><StatCard icon={Calendar} label="Upcoming Camps" value={stats?.upcomingCamps || 0} trend="Scheduled" color="text-purple-600" bg="bg-purple-50" /></Link>
-                    <Link to="/emergency-requests"><StatCard icon={Activity} label="Emergency Requests" value={stats?.emergencyRequests || 0} trend="Urgent" color="text-red-600" bg="bg-red-50" /></Link>
+                {/* My Donations & Certificates */}
+                <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                        <h2 className="text-xl font-bold text-gray-800 flex items-center space-x-2">
+                            <Award className="w-5 h-5 text-yellow-500" />
+                            <span>My Donations & Certificates</span>
+                        </h2>
+                        <button 
+                            onClick={() => setShowLogModal(true)}
+                            className="bg-red-50 text-red-600 hover:bg-red-100 font-bold px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center space-x-1"
+                        >
+                            <PlusCircle className="w-4 h-4" />
+                            <span>Log Past Donation</span>
+                        </button>
+                    </div>
+                    {profile?.donations?.length > 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                            {profile.donations.map((donation, idx) => (
+                                <div key={idx} className="bg-white border border-gray-100 rounded-2xl overflow-hidden shadow-sm hover:shadow-lg transition-all group">
+                                    <div className="bg-gradient-to-r from-red-600 to-red-500 px-5 py-3 flex items-center justify-between">
+                                        <div className="flex items-center space-x-2">
+                                            <Droplet className="w-4 h-4 text-white/80 fill-current" />
+                                            <span className="text-white/80 text-xs font-black uppercase tracking-widest">Donation #{profile.donations.length - idx}</span>
+                                        </div>
+                                        <span className="text-white/70 text-xs font-bold">
+                                            {new Date(donation.date).toLocaleDateString()}
+                                        </span>
+                                    </div>
+                                    <div className="p-5">
+                                        <div className="flex items-center space-x-3 mb-4">
+                                            <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
+                                                <Hospital className="w-5 h-5 text-red-500" />
+                                            </div>
+                                            <div>
+                                                <h3 className="font-black text-gray-800 text-sm">{donation.hospitalName}</h3>
+                                                <p className="text-xs text-green-600 font-bold flex items-center space-x-1">
+                                                    <CheckCircle className="w-3 h-3" />
+                                                    <span>Verified Donation</span>
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex space-x-2">
+                                            <button 
+                                                onClick={() => setShowCert(donation)}
+                                                className="flex-1 py-2.5 bg-gradient-to-r from-yellow-50 to-amber-50 text-amber-700 hover:from-yellow-100 hover:to-amber-100 font-black text-xs rounded-xl transition-colors flex items-center justify-center space-x-2 border border-yellow-100"
+                                            >
+                                                <Award className="w-4 h-4" />
+                                                <span>View Certificate</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="bg-white border-2 border-dashed border-gray-100 rounded-2xl p-12 text-center">
+                            <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <Award className="w-8 h-8 text-gray-200" />
+                            </div>
+                            <p className="font-bold text-gray-400 text-sm">No completed donations yet.</p>
+                            <p className="text-gray-300 text-xs mt-1">Your donation history will appear here.</p>
+                        </div>
+                    )}
                 </div>
+
+                {/* Priority Cards */}
+                {priorityCards.length > 0 && (
+                    <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                            <h2 className="text-xl font-bold text-gray-800 flex items-center space-x-2">
+                                <HeartHandshake className="w-5 h-5 text-purple-500" />
+                                <span>My Priority Cards</span>
+                            </h2>
+                            <div className="flex items-center space-x-2 text-xs font-bold text-gray-400">
+                                <span className="px-2 py-1 bg-slate-100 rounded-lg">🥈 2+ Silver</span>
+                                <span className="px-2 py-1 bg-yellow-100 rounded-lg">⭐ 5+ Gold</span>
+                                <span className="px-2 py-1 bg-purple-100 rounded-lg">👑 8+ Elite</span>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {priorityCards.map((card, idx) => (
+                                <div key={idx} className={`bg-gradient-to-br ${card.color} rounded-3xl p-6 text-white shadow-xl relative overflow-hidden group hover:scale-[1.02] transition-transform duration-300`}>
+                                    <div className="absolute -right-10 -top-10 rounded-full w-40 h-40 bg-white opacity-10 blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
+                                    <div className="absolute -left-5 -bottom-5 rounded-full w-32 h-32 bg-white opacity-5 blur-xl"></div>
+                                    <div className="absolute top-4 left-0 w-full h-px bg-white/10"></div>
+                                    <div className="flex justify-between items-start mb-1 relative z-10">
+                                        <div>
+                                            <p className={`${card.labelColor} text-[10px] font-black uppercase tracking-[0.2em] mb-0.5`}>BLOODLINK · Priority Donor</p>
+                                            <h3 className="text-xl font-black drop-shadow-sm">{card.hospital}</h3>
+                                        </div>
+                                        <div className="text-right">
+                                            <span className="text-3xl drop-shadow-md">{card.icon}</span>
+                                            <p className={`text-[10px] font-black uppercase tracking-wider ${card.labelColor}`}>{card.tier} Tier</p>
+                                        </div>
+                                    </div>
+                                    <div className={`${card.bgAccent} backdrop-blur-sm border ${card.borderColor} rounded-xl px-4 py-2 mb-4 inline-block`}>
+                                        <p className="font-mono text-sm font-bold tracking-wider drop-shadow-sm">{card.cardNumber}</p>
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-4 mb-4 relative z-10">
+                                        <div>
+                                            <p className={`${card.labelColor} text-[9px] font-black uppercase tracking-widest mb-0.5`}>Card Holder</p>
+                                            <p className="font-bold text-sm drop-shadow-sm">{card.holderName}</p>
+                                        </div>
+                                        <div>
+                                            <p className={`${card.labelColor} text-[9px] font-black uppercase tracking-widest mb-0.5`}>Blood Group</p>
+                                            <p className="font-bold text-sm drop-shadow-sm">{card.bloodGroup}</p>
+                                        </div>
+                                        <div>
+                                            <p className={`${card.labelColor} text-[9px] font-black uppercase tracking-widest mb-0.5`}>Donations</p>
+                                            <p className="font-bold text-sm drop-shadow-sm">{card.count} Completed</p>
+                                        </div>
+                                    </div>
+                                    <div className="bg-black/15 backdrop-blur-sm rounded-xl px-4 py-3 mb-4 relative z-10">
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center space-x-4 text-[10px] font-bold">
+                                                <span>✦ {card.discount} Emergency Discount</span>
+                                                <span>·</span>
+                                                <span>Priority Treatment</span>
+                                                <span>·</span>
+                                                <span>Fast-Track Access</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button 
+                                        onClick={() => downloadCard(card)}
+                                        className="w-full py-2.5 bg-white/20 hover:bg-white/30 backdrop-blur-sm rounded-xl font-black text-xs uppercase tracking-widest transition-all active:scale-95 flex items-center justify-center space-x-2 border border-white/20"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                        <span>Download Card</span>
+                                    </button>
+                                </div>
+                            ))}
+                            {/* About Priority Cards — fills the right column beside card */}
+                            {priorityCards.length % 2 !== 0 && (
+                                <div className="bg-gradient-to-br from-gray-50 to-white border border-gray-100 rounded-2xl p-6 flex flex-col justify-center">
+                                    <h4 className="font-black text-gray-700 text-sm mb-4 flex items-center space-x-2">
+                                        <AlertTriangle className="w-4 h-4 text-amber-500" />
+                                        <span>About Priority Cards</span>
+                                    </h4>
+                                    <div className="space-y-4 text-xs">
+                                        <div className="flex items-start space-x-3">
+                                            <span className="text-xl">🥈</span>
+                                            <div>
+                                                <p className="font-bold text-gray-700">Silver Card (2+ Donations)</p>
+                                                <p className="text-gray-400">5% discount on emergency services. Basic priority in queue.</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-start space-x-3">
+                                            <span className="text-xl">⭐</span>
+                                            <div>
+                                                <p className="font-bold text-gray-700">Gold Card (5+ Donations)</p>
+                                                <p className="text-gray-400">10% discount on all services. Priority treatment access.</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-start space-x-3">
+                                            <span className="text-xl">👑</span>
+                                            <div>
+                                                <p className="font-bold text-gray-700">Elite Card (8+ Donations)</p>
+                                                <p className="text-gray-400">15% discount + fast-track access. Highest priority in emergencies.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <p className="text-[10px] text-gray-400 mt-4 font-bold uppercase tracking-wider">Present your card at the hospital for priority benefits.</p>
+                                </div>
+                            )}
+                        </div>
+                        {/* Show info below if even number of cards */}
+                        {priorityCards.length % 2 === 0 && (
+                            <div className="bg-gradient-to-r from-gray-50 to-white border border-gray-100 rounded-2xl p-5">
+                                <h4 className="font-black text-gray-700 text-sm mb-3 flex items-center space-x-2">
+                                    <AlertTriangle className="w-4 h-4 text-amber-500" />
+                                    <span>About Priority Cards</span>
+                                </h4>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                                    <div className="flex items-start space-x-2">
+                                        <span className="text-lg">🥈</span>
+                                        <div>
+                                            <p className="font-bold text-gray-700">Silver Card (2+ Donations)</p>
+                                            <p className="text-gray-400">5% discount on emergency services. Basic priority in queue.</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-start space-x-2">
+                                        <span className="text-lg">⭐</span>
+                                        <div>
+                                            <p className="font-bold text-gray-700">Gold Card (5+ Donations)</p>
+                                            <p className="text-gray-400">10% discount on all services. Priority treatment access.</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-start space-x-2">
+                                        <span className="text-lg">👑</span>
+                                        <div>
+                                            <p className="font-bold text-gray-700">Elite Card (8+ Donations)</p>
+                                            <p className="text-gray-400">15% discount + fast-track access. Highest priority in emergencies.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 {/* My Registered Camps */}
                 {myRegistered.length > 0 && (
@@ -351,109 +725,20 @@ const Dashboard = () => {
                 </div>
 
                 {/* Quick Actions */}
-                <div className="space-y-4">
-                    <h2 className="text-xl font-bold text-gray-800">Quick Actions</h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        {quickActions.map((action) => {
-                            const Icon = action.icon;
-                            return (
-                                <Link key={action.name} to={action.path}
-                                    className="group flex items-center justify-between p-4 bg-white border border-gray-100 rounded-xl hover:shadow-md transition-all"
-                                >
-                                    <div className="flex items-center space-x-4">
-                                        <div className={`p-2 rounded-lg text-white ${action.color}`}>
-                                            <Icon className="w-6 h-6" />
-                                        </div>
-                                        <span className="font-bold text-gray-700">{action.name}</span>
-                                    </div>
-                                    <ArrowRight className="w-5 h-5 text-gray-300 group-hover:text-red-500 transform group-hover:translate-x-1 transition-all" />
-                                </Link>
-                            );
-                        })}
-                    </div>
-                </div>
-
-                {/* My Donations & Certificates */}
-                <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                        <h2 className="text-xl font-bold text-gray-800 flex items-center space-x-2">
-                            <Award className="w-5 h-5 text-yellow-500" />
-                            <span>My Donations & Certificates</span>
-                        </h2>
-                        <button 
-                            onClick={() => setShowLogModal(true)}
-                            className="bg-red-50 text-red-600 hover:bg-red-100 font-bold px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center space-x-1"
-                        >
-                            <PlusCircle className="w-4 h-4" />
-                            <span>Log Past Donation</span>
-                        </button>
-                    </div>
-                    {profile?.donations?.length > 0 ? (
-                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                            {profile.donations.map((donation, idx) => (
-                                <div key={idx} className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all">
-                                    <div className="flex justify-between items-start mb-3">
-                                        <div className="bg-red-50 text-red-600 p-2 rounded-lg">
-                                            <Droplet className="w-5 h-5" />
-                                        </div>
-                                        <span className="text-xs font-bold text-gray-400">
-                                            {new Date(donation.date).toLocaleDateString()}
-                                        </span>
-                                    </div>
-                                    <h3 className="font-bold text-gray-800 mb-1">{donation.hospitalName}</h3>
-                                    <p className="text-xs text-green-600 font-bold bg-green-50 w-fit px-2 py-1 rounded mb-4">Completed</p>
-                                    <button 
-                                        onClick={() => setShowCert(donation)}
-                                        className="w-full py-2 bg-yellow-50 text-yellow-700 hover:bg-yellow-100 font-bold text-xs rounded-xl transition-colors flex items-center justify-center space-x-2"
-                                    >
-                                        <Award className="w-4 h-4" />
-                                        <span>View Certificate</span>
-                                    </button>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    {quickActions.map((action) => {
+                        const Icon = action.icon;
+                        return (
+                            <Link key={action.name} to={action.path} className="group flex items-center space-x-4 p-4 bg-white border border-gray-100 rounded-2xl hover:shadow-md transition-all hover:border-gray-200">
+                                <div className={`p-3 rounded-xl text-white ${action.color} shadow-lg`}><Icon className="w-5 h-5" /></div>
+                                <div className="flex-1">
+                                    <p className="font-black text-gray-800 text-sm">{action.name}</p>
+                                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Go →</p>
                                 </div>
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="bg-white border border-gray-100 rounded-2xl p-10 text-center">
-                            <p className="font-bold text-gray-400 text-sm">No completed donations yet.</p>
-                        </div>
-                    )}
+                            </Link>
+                        );
+                    })}
                 </div>
-
-                {/* Priority Cards */}
-                {priorityHospitals.length > 0 && (
-                    <div className="space-y-4">
-                        <div className="flex items-center justify-between">
-                            <h2 className="text-xl font-bold text-gray-800 flex items-center space-x-2">
-                                <HeartHandshake className="w-5 h-5 text-purple-500" />
-                                <span>My Priority Cards</span>
-                            </h2>
-                        </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                            {priorityHospitals.map((hospital, idx) => (
-                                <div key={idx} className="bg-gradient-to-br from-purple-600 to-indigo-700 rounded-2xl p-6 text-white shadow-lg relative overflow-hidden group">
-                                    <div className="absolute -right-6 -top-6 rounded-full w-32 h-32 bg-white opacity-10 blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
-                                    <div className="flex justify-between items-center mb-6 relative z-10">
-                                        <div>
-                                            <p className="text-purple-200 text-xs font-black uppercase tracking-widest mb-1">Priority Donor</p>
-                                            <h3 className="text-2xl font-black">{hospital}</h3>
-                                        </div>
-                                        <Award className="w-10 h-10 text-yellow-400" />
-                                    </div>
-                                    <div className="flex justify-between items-end relative z-10">
-                                        <div>
-                                            <p className="text-purple-200 text-xs mb-1">Card Holder</p>
-                                            <p className="font-bold">{profile?.name || user.username}</p>
-                                        </div>
-                                        <div className="text-right">
-                                            <p className="text-purple-200 text-xs mb-1">Status</p>
-                                            <p className="font-bold text-yellow-400">Elite Member</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
 
                 {/* Toast */}
                 {toast && (
@@ -506,6 +791,88 @@ const Dashboard = () => {
                                         <p className="text-sm font-bold text-gray-500">Date</p>
                                     </div>
                                 </div>
+
+                                <button 
+                                    onClick={() => {
+                                        const canvas = document.createElement('canvas');
+                                        canvas.width = 800;
+                                        canvas.height = 600;
+                                        const ctx = canvas.getContext('2d');
+                                        ctx.fillStyle = '#FFFFFF';
+                                        ctx.fillRect(0, 0, 800, 600);
+                                        ctx.strokeStyle = '#D4AF37';
+                                        ctx.lineWidth = 8;
+                                        ctx.strokeRect(20, 20, 760, 560);
+                                        ctx.strokeStyle = '#F0D78C';
+                                        ctx.lineWidth = 2;
+                                        ctx.strokeRect(30, 30, 740, 540);
+                                        ctx.fillStyle = '#D4AF37';
+                                        ctx.font = '48px serif';
+                                        ctx.textAlign = 'center';
+                                        ctx.fillText('🏆', 400, 80);
+                                        ctx.fillStyle = '#1a1a1a';
+                                        ctx.font = 'bold 32px Georgia, serif';
+                                        ctx.fillText('CERTIFICATE OF APPRECIATION', 400, 140);
+                                        ctx.fillStyle = '#888';
+                                        ctx.font = 'italic 16px Georgia, serif';
+                                        ctx.fillText('This certificate is proudly presented to', 400, 180);
+                                        ctx.fillStyle = '#DC2626';
+                                        ctx.font = 'bold 28px Georgia, serif';
+                                        ctx.fillText(profile?.name || user.username, 400, 240);
+                                        ctx.strokeStyle = '#FEE2E2';
+                                        ctx.lineWidth = 2;
+                                        ctx.beginPath();
+                                        ctx.moveTo(200, 255);
+                                        ctx.lineTo(600, 255);
+                                        ctx.stroke();
+                                        ctx.fillStyle = '#444';
+                                        ctx.font = '15px Georgia, serif';
+                                        ctx.fillText(`In recognition of your generous life-saving blood donation on`, 400, 310);
+                                        ctx.font = 'bold 15px Georgia, serif';
+                                        ctx.fillText(`${new Date(showCert.date).toLocaleDateString()} at ${showCert.hospitalName}.`, 400, 340);
+                                        ctx.font = '15px Georgia, serif';
+                                        ctx.fillText('Your selflessness brings hope and healing to those in need.', 400, 390);
+                                        ctx.strokeStyle = '#999';
+                                        ctx.lineWidth = 1;
+                                        ctx.beginPath();
+                                        ctx.moveTo(100, 500);
+                                        ctx.lineTo(260, 500);
+                                        ctx.stroke();
+                                        ctx.fillStyle = '#888';
+                                        ctx.font = '12px sans-serif';
+                                        ctx.textAlign = 'center';
+                                        ctx.fillText('Authorized Signature', 180, 520);
+                                        ctx.strokeStyle = '#D4AF37';
+                                        ctx.lineWidth = 3;
+                                        ctx.beginPath();
+                                        ctx.arc(400, 490, 35, 0, Math.PI * 2);
+                                        ctx.stroke();
+                                        ctx.fillStyle = '#D4AF37';
+                                        ctx.font = 'bold 9px sans-serif';
+                                        ctx.fillText('OFFICIAL', 400, 487);
+                                        ctx.fillText('SEAL', 400, 500);
+                                        ctx.strokeStyle = '#999';
+                                        ctx.lineWidth = 1;
+                                        ctx.beginPath();
+                                        ctx.moveTo(540, 500);
+                                        ctx.lineTo(700, 500);
+                                        ctx.stroke();
+                                        ctx.fillStyle = '#1a1a1a';
+                                        ctx.font = 'bold 13px sans-serif';
+                                        ctx.fillText(new Date(showCert.date).toLocaleDateString(), 620, 496);
+                                        ctx.fillStyle = '#888';
+                                        ctx.font = '12px sans-serif';
+                                        ctx.fillText('Date', 620, 520);
+                                        const link = document.createElement('a');
+                                        link.download = `Certificate_${(profile?.name || user.username).replace(/\s+/g, '_')}_${new Date(showCert.date).toLocaleDateString().replace(/\//g, '-')}.png`;
+                                        link.href = canvas.toDataURL('image/png');
+                                        link.click();
+                                    }}
+                                    className="mt-8 mx-auto flex items-center space-x-2 px-8 py-3 bg-red-600 text-white font-black rounded-xl hover:bg-red-700 transition-all active:scale-95 shadow-lg shadow-red-100"
+                                >
+                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                    <span>Download Certificate</span>
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -549,10 +916,10 @@ const Dashboard = () => {
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <Link to="/stock"><StatCard icon={Users} label="Total Donors" value={stats?.totalDonors || 0} trend="Active" color="text-blue-600" bg="bg-blue-50" /></Link>
-                <Link to="/emergency-requests"><StatCard icon={Droplet} label="Requests" value={stats?.emergencyRequests || 0} trend="Urgent" color="text-red-600" bg="bg-red-50" /></Link>
+                <Link to="/stock?tab=donors"><StatCard icon={Users} label="Total Donors" value={stats?.totalDonors || 0} trend="Active" color="text-blue-600" bg="bg-blue-50" /></Link>
+                <Link to="/hospital-requests"><StatCard icon={Droplet} label="Network Needs" value={externalRequestsCount} trend="Urgent" color="text-red-600" bg="bg-red-50" /></Link>
                 <Link to="/camps"><StatCard icon={Calendar} label="Upc. Camps" value={stats?.upcomingCamps || 0} trend="Upcoming" color="text-purple-600" bg="bg-purple-50" /></Link>
-                <Link to="/stock"><StatCard icon={Activity} label="Hospitals" value={stats?.totalHospitals || 0} trend="Registered" color="text-emerald-600" bg="bg-emerald-50" /></Link>
+                <Link to="/stock?tab=hospitals"><StatCard icon={Activity} label="Hospitals" value={stats?.totalHospitals || 0} trend="Registered" color="text-emerald-600" bg="bg-emerald-50" /></Link>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

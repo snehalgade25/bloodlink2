@@ -11,10 +11,19 @@ import {
     MapPin,
     ArrowRight
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 
 const Stock = () => {
-    const [activeTab, setActiveTab] = useState('hospitals');
+    const location = useLocation();
+    const queryParams = new URLSearchParams(location.search);
+    const initialTab = queryParams.get('tab') || 'hospitals';
+
+    const [activeTab, setActiveTab] = useState(initialTab);
+    useEffect(() => {
+        const queryTab = new URLSearchParams(location.search).get('tab');
+        if (queryTab) setActiveTab(queryTab);
+    }, [location.search]);
+
     const [hospitals, setHospitals] = useState([]);
     const [bloodBanks, setBloodBanks] = useState([]);
     const [donors, setDonors] = useState([]);
@@ -46,10 +55,19 @@ const Stock = () => {
         d.bloodGroup.toLowerCase().includes(searchTerm.toLowerCase())
     );
 
+    const user = JSON.parse(sessionStorage.getItem('user'));
+
+    const getStatus = (h) => {
+        const total = (h.unitsA || 0) + (h.unitsB || 0) + (h.unitsO || 0) + (h.unitsAB || 0);
+        const hasVeryLow = (h.unitsA < 2 || h.unitsB < 2 || h.unitsO < 2 || h.unitsAB < 2);
+        return (total < 10 || hasVeryLow) ? 'Critical' : 'Stable';
+    };
+
     const filteredHospitals = hospitals.filter(h =>
-        h.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        h.location.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+        (h.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            h.location.toLowerCase().includes(searchTerm.toLowerCase())) &&
+        (user?.role !== 'HOSPITAL' || h.username !== user?.username)
+    ).map(h => ({ ...h, calculatedStatus: getStatus(h) }));
 
     const filteredBanks = bloodBanks.filter(b =>
         b.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -93,7 +111,7 @@ const Stock = () => {
                                 key={hospital._id}
                                 title={hospital.name}
                                 location={hospital.location}
-                                status={hospital.status}
+                                status={hospital.calculatedStatus}
                                 stocks={{ A: hospital.unitsA, B: hospital.unitsB, O: hospital.unitsO, AB: hospital.unitsAB }}
                                 link={`/hospital/${hospital._id}`}
                                 icon={Hospital}

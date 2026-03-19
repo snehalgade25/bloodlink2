@@ -1,1 +1,21 @@
 @import "tailwindcss";
+
+@layer base {
+  button,
+  a,
+  select,
+  input[type="button"],
+  input[type="submit"],
+  input[type="reset"],
+  [role="button"],
+  label[for],
+  label {
+    cursor: pointer;
+  }
+
+  /* Ensure disabled state shows correct cursor */
+  button:disabled,
+  input:disabled {
+    cursor: not-allowed;
+  }
+}

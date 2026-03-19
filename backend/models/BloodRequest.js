@@ -10,6 +10,7 @@ const BloodRequestSchema = new mongoose.Schema({
     volunteers: [{
         username: { type: String, required: true },
         status: { type: String, enum: ['Pending', 'Accepted', 'Completed', 'Rejected'], default: 'Pending' },
+        volunteerType: { type: String, enum: ['DONOR', 'HOSPITAL'], default: 'DONOR' },
         registeredAt: { type: Date, default: Date.now }
     }]
 }, { timestamps: true });

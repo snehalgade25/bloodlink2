@@ -21,7 +21,7 @@ const HospitalDetail = () => {
     const [loading, setLoading] = useState(true);
     const [requests, setRequests] = useState([]);
     const [donorProfile, setDonorProfile] = useState(null);
-    const user = JSON.parse(localStorage.getItem('user'));
+    const user = JSON.parse(sessionStorage.getItem('user'));
 
 
     useEffect(() => {
@@ -65,7 +65,7 @@ const HospitalDetail = () => {
         }
     };
 
-    const isVolunteered = (request) => request.volunteers?.some(v => v.username === user?.username);
+    const isVolunteered = (request) => request.volunteers?.some(v => v.username.toLowerCase() === user?.username.toLowerCase());
     const getVolunteerStatus = (request) => request.volunteers?.find(v => v.username === user?.username)?.status;
 
 
@@ -76,6 +76,13 @@ const HospitalDetail = () => {
     );
 
     if (!h) return <div>Hospital not found</div>;
+
+    const getStatus = (hos) => {
+        const total = (hos.unitsA || 0) + (hos.unitsB || 0) + (hos.unitsO || 0) + (hos.unitsAB || 0);
+        const hasVeryLow = (hos.unitsA < 2 || hos.unitsB < 2 || hos.unitsO < 2 || hos.unitsAB < 2);
+        return (total < 10 || hasVeryLow) ? 'Critical' : 'Stable';
+    };
+    const currentStatus = getStatus(h);
 
     return (
         <div className="space-y-8">
@@ -99,9 +106,9 @@ const HospitalDetail = () => {
                                 </div>
                             </div>
                         </div>
-                        <span className={`px-4 py-2 rounded-full text-sm font-bold ${h.status === 'Critical' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                        <span className={`px-4 py-2 rounded-full text-sm font-bold ${currentStatus === 'Critical' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
                             }`}>
-                            {h.status} Mode
+                            {currentStatus} Mode
                         </span>
                     </div>
 
@@ -148,55 +155,18 @@ const HospitalDetail = () => {
                             <DetailedStock label="AB Positive" value={h.unitsAB} />
                         </div>
 
-                        <Link to="/request" className="w-full mt-8 bg-red-600 text-white font-bold py-3 rounded-xl hover:bg-red-700 transition-all shadow-lg shadow-red-200 flex items-center justify-center">
-                            Request from this Hospital
-                        </Link>
+                        {user?.role === 'HOSPITAL' && h?.username === user?.username ? (
+                            <div className="w-full mt-8 p-4 bg-gray-50 border border-gray-100 rounded-xl text-center">
+                                <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-1">Your Inventory</p>
+                                <p className="text-sm font-bold text-gray-500">Manage your stock from the sidebar</p>
+                            </div>
+                        ) : (
+                            <Link to="/request" className="w-full mt-8 bg-red-600 text-white font-bold py-3 rounded-xl hover:bg-red-700 transition-all shadow-lg shadow-red-200 flex items-center justify-center">
+                                Request from this Hospital
+                            </Link>
+                        )}
                     </div>
 
-                    {/* Active Emergency Requests for this Hospital */}
-                    {requests.length > 0 && (
-                        <div className="mt-8 space-y-4">
-                            <h3 className="text-xl font-extrabold text-gray-800 flex items-center">
-                                <AlertTriangle className="w-6 h-6 mr-2 text-red-600 animate-pulse" />
-                                Active Emergencies
-                            </h3>
-                            <div className="space-y-4">
-                                {requests.map(request => (
-                                    <div key={request._id} className="bg-white border-2 border-red-50 rounded-2xl p-5 shadow-md relative overflow-hidden">
-                                        <div className="flex justify-between items-start mb-3">
-                                            <div className="bg-red-600 text-white px-3 py-1 rounded-lg text-xs font-black">
-                                                {request.bloodGroup}
-                                            </div>
-                                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{new Date(request.createdAt).toLocaleDateString()}</span>
-                                        </div>
-                                        <p className="text-sm text-gray-600 font-bold mb-4 line-clamp-2">{request.reason || 'Urgent requirement at our facility.'}</p>
-                                        
-                                        {user?.role === 'DONOR' ? (
-                                            <button
-                                                disabled={isVolunteered(request)}
-                                                onClick={() => handleVolunteer(request._id)}
-                                                className={`w-full py-3 rounded-xl font-black text-xs flex items-center justify-center space-x-2 transition-all active:scale-95 ${
-                                                    isVolunteered(request)
-                                                        ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
-                                                        : 'bg-red-600 text-white hover:bg-red-700 shadow-lg shadow-red-100'
-                                                }`}
-                                            >
-                                                {isVolunteered(request) ? (
-                                                    <><CheckCircle className="w-4 h-4" /><span>Volunteered ({getVolunteerStatus(request)})</span></>
-                                                ) : (
-                                                    <><HeartHandshake className="w-4 h-4" /><span>Volunteer Now</span></>
-                                                )}
-                                            </button>
-                                        ) : (
-                                            <div className="text-xs font-black text-red-500 uppercase tracking-tighter text-center bg-red-50 py-2 rounded-lg">
-                                                Match needed: {request.bloodGroup}
-                                            </div>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
                 </div>
             </div>
         </div>

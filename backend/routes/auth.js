@@ -96,13 +96,21 @@ router.get('/my-profile/:username', async (req, res) => {
 router.post('/update-stock', async (req, res) => {
     try {
         const { username, unitsA, unitsB, unitsO, unitsAB } = req.body;
+        const uA = Number(unitsA);
+        const uB = Number(unitsB);
+        const uO = Number(unitsO);
+        const uAB = Number(unitsAB);
+        const total = uA + uB + uO + uAB;
+        const newStatus = (total < 10 || uA < 2 || uB < 2 || uO < 2 || uAB < 2) ? 'Critical' : 'Stable';
+
         const hospital = await Hospital.findOneAndUpdate(
             { username: username },
             {
-                unitsA: Number(unitsA),
-                unitsB: Number(unitsB),
-                unitsO: Number(unitsO),
-                unitsAB: Number(unitsAB)
+                unitsA: uA,
+                unitsB: uB,
+                unitsO: uO,
+                unitsAB: uAB,
+                status: newStatus
             },
             { new: true, upsert: true }
         );

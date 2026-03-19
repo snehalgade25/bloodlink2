@@ -9,7 +9,10 @@ import Camps from './pages/Camps';
 import Donate from './pages/Donate';
 import RequestBlood from './pages/RequestBlood';
 import EmergencyRequests from './pages/EmergencyRequests';
+import Volunteers from './pages/Volunteers';
+import Cards from './pages/Cards';
 import ManageStock from './pages/ManageStock';
+import HospitalRequests from './pages/HospitalRequests';
 import Layout from './components/Layout';
 import AdminDashboard from './pages/AdminDashboard';
 
@@ -31,7 +34,10 @@ function App() {
           <Route path="camps" element={<Camps />} />
           <Route path="donate" element={<Donate />} />
           <Route path="request" element={<RequestBlood />} />
+          <Route path="hospital-requests" element={<HospitalRequests />} />
           <Route path="emergency-requests" element={<EmergencyRequests />} />
+          <Route path="volunteers" element={<Volunteers />} />
+          <Route path="cards" element={<Cards />} />
         </Route>
       </Routes>
     </Router>

@@ -6,7 +6,14 @@ const BloodRequest = require('../models/BloodRequest');
 const Donor = require('../models/Donor');
 const BloodBank = require('../models/BloodBank');
 const User = require('../models/User'); // Required for emails
-const { sendEmergencyEmail } = require('../utils/emailService');
+const { 
+    sendEmergencyEmail, 
+    sendVolunteerEmail, 
+    sendHospitalResponseEmail, 
+    sendAcceptanceEmail, 
+    sendCertificateEmail, 
+    sendPriorityCardEmail 
+} = require('../utils/emailService');
 
 // Get all hospitals
 router.get('/hospitals', async (req, res) => {
@@ -79,6 +86,93 @@ router.post('/donate', async (req, res) => {
         res.status(200).json({ message: 'Donation intent logged successfully' });
     } catch (err) {
         res.status(400).json({ error: err.message });
+    }
+});
+
+// Inter-Hospital Volunteer Route (New)
+router.post('/request/:id/volunteer/hospital', async (req, res) => {
+    try {
+        const { username } = req.body;
+        const [request, hospital] = await Promise.all([
+            BloodRequest.findById(req.params.id),
+            Hospital.findOne({ username })
+        ]);
+
+        if (!request) return res.status(404).json({ error: 'Blood request not found.' });
+        if (!hospital) return res.status(404).json({ error: 'Hospital profile not found.' });
+
+        // 1. CHECK STABILITY (Responsible Donation)
+        const total = (hospital.unitsA || 0) + (hospital.unitsB || 0) + (hospital.unitsO || 0) + (hospital.unitsAB || 0);
+        const hasLow = (hospital.unitsA < 2 || hospital.unitsB < 2 || hospital.unitsO < 2 || hospital.unitsAB < 2);
+        const isStable = (total >= 10 && !hasLow);
+
+        if (!isStable) {
+            return res.status(400).json({ 
+                error: `Action Denied: Your hospital's stock level is currently ${total < 10 ? 'low' : 'unbalanced'}. To ensure your facility remains safe, inter-hospital donations are only permitted when your status is 'Stable'.` 
+            });
+        }
+
+        const bloodGroup = request.bloodGroup;
+        let updateQuery = {};
+        if (bloodGroup === 'A+') {
+            if (hospital.unitsA < 1) return res.status(400).json({ error: 'Insufficient A+ stock.' });
+            updateQuery = { unitsA: hospital.unitsA - 1 };
+        } else if (bloodGroup === 'B+') {
+            if (hospital.unitsB < 1) return res.status(400).json({ error: 'Insufficient B+ stock.' });
+            updateQuery = { unitsB: hospital.unitsB - 1 };
+        } else if (bloodGroup === 'O+') {
+            if (hospital.unitsO < 1) return res.status(400).json({ error: 'Insufficient O+ stock.' });
+            updateQuery = { unitsO: hospital.unitsO - 1 };
+        } else if (bloodGroup === 'AB+') {
+            if (hospital.unitsAB < 1) return res.status(400).json({ error: 'Insufficient AB+ stock.' });
+            updateQuery = { unitsAB: hospital.unitsAB - 1 };
+        }
+
+        // 2. Prevent duplicate volunteer
+        const alreadyVolunteered = request.volunteers.some(v => v.username === username);
+        if (alreadyVolunteered) return res.status(400).json({ error: 'Your hospital has already volunteered for this request.' });
+
+        // 3. Deduction & Status Sync
+        const newTotal = total - 1;
+        // Recalculate status for the donating hospital
+        const finalUnitsA = bloodGroup === 'A+' ? hospital.unitsA - 1 : hospital.unitsA;
+        const finalUnitsB = bloodGroup === 'B+' ? hospital.unitsB - 1 : hospital.unitsB;
+        const finalUnitsO = bloodGroup === 'O+' ? hospital.unitsO - 1 : hospital.unitsO;
+        const finalUnitsAB = bloodGroup === 'AB+' ? hospital.unitsAB - 1 : hospital.unitsAB;
+        const finalStatus = (newTotal < 10 || finalUnitsA < 2 || finalUnitsB < 2 || finalUnitsO < 2 || finalUnitsAB < 2) ? 'Critical' : 'Stable';
+
+        await Hospital.updateOne({ username }, { 
+            ...updateQuery, 
+            status: finalStatus 
+        });
+
+        // 4. Register Volunteer
+        request.volunteers.push({ 
+            username, 
+            status: 'Accepted', 
+            volunteerType: 'HOSPITAL' 
+        });
+        await request.save();
+
+        // 5. Notify Requesting Hospital via Email
+        const reqHospital = await Hospital.findOne({ name: request.hospitalName });
+        if (reqHospital) {
+            const reqUser = await User.findOne({ username: reqHospital.username });
+            if (reqUser && reqUser.email) {
+                console.log(`[NETWORK] Notifying ${request.hospitalName} about support from ${hospital.name}`);
+                sendHospitalResponseEmail(
+                    reqUser.email, 
+                    bloodGroup, 
+                    hospital.name, 
+                    hospital.contactInfo || reqUser.phone || 'Check dashboard'
+                );
+            }
+        }
+
+        res.status(200).json({ message: `Successfully volunteered ${bloodGroup} support for ${request.hospitalName}!` });
+    } catch (err) {
+        console.error('[HOSPITAL VOLUNTEER ERROR]:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -171,6 +265,22 @@ router.post('/request', async (req, res) => {
     }
 });
 
+// Get all open requests (lenient check for legacy data)
+router.get('/requests/all', async (req, res) => {
+    try {
+        const requests = await BloodRequest.find({ }).sort({ createdAt: -1 });
+        console.log(`[GET] Found ${requests.length} open requests.`);
+        res.json(requests);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Alias for singular
+router.get('/request/all', async (req, res) => {
+    res.redirect('/api/requests/all');
+});
+
 // Get matching requests for a donor
 router.get('/matching-requests/:bloodGroup', async (req, res) => {
     try {
@@ -178,7 +288,11 @@ router.get('/matching-requests/:bloodGroup', async (req, res) => {
         // Find matching requests (case-insensitive)
         const requests = await BloodRequest.find({
             bloodGroup: { $regex: new RegExp(`^${bloodGroup.replace(/\+/g, '\\+')}$`, 'i') },
-            status: 'Open'
+            $or: [
+                { status: { $regex: /^open$/i } },
+                { status: { $exists: false } },
+                { status: null }
+            ]
         }).sort({ createdAt: -1 });
 
         res.json(requests);
@@ -270,13 +384,31 @@ router.delete('/camps/:id/register', async (req, res) => {
 router.post('/request/:id/volunteer', async (req, res) => {
     try {
         const { username } = req.body;
-        const [request, donor] = await Promise.all([
+        const [request, donorInDb] = await Promise.all([
             BloodRequest.findById(req.params.id),
             Donor.findOne({ username })
         ]);
 
         if (!request) return res.status(404).json({ error: 'Request not found' });
-        if (!donor) return res.status(404).json({ error: 'Donor profile not found' });
+
+        let donor = donorInDb;
+        if (!donor) {
+            // Check if User exists and is of role DONOR
+            const user = await User.findOne({ username });
+            if (!user) return res.status(404).json({ error: 'User account not found' });
+            if (user.role !== 'DONOR') return res.status(400).json({ error: 'Only donors can volunteer' });
+
+            // Auto-create missing donor profile
+            console.log(`[VOLUNTEER] Auto-creating missing donor profile for: ${username}`);
+            donor = new Donor({
+                username: user.username,
+                name: user.username.split('@')[0], // Simplified
+                bloodGroup: 'O+', // DEFAULT, user should update in profile
+                contactInfo: user.phone || 'N/A',
+                age: 18
+            });
+            await donor.save();
+        }
 
         // Check buffer period (90 days)
         if (donor.donations && donor.donations.length > 0) {
@@ -295,7 +427,27 @@ router.post('/request/:id/volunteer', async (req, res) => {
 
         request.volunteers.push({ username, status: 'Pending' });
         await request.save();
-        res.json({ message: 'Volunteered successfully', request });
+
+        // 1. Notify Hospital via Email (Async)
+        try {
+            const hospitalProfile = await Hospital.findOne({ name: request.hospitalName });
+            if (hospitalProfile) {
+                const hospitalUser = await User.findOne({ username: hospitalProfile.username });
+                if (hospitalUser && hospitalUser.email) {
+                    console.log(`[VOLUNTEER] Notifying hospital ${request.hospitalName} at ${hospitalUser.email}`);
+                    sendVolunteerEmail(
+                        hospitalUser.email,
+                        request.bloodGroup,
+                        donor.name || donor.username,
+                        donor.contactInfo || 'Not specified'
+                    );
+                }
+            }
+        } catch (emailErr) {
+            console.error('[VOLUNTEER EMAIL ERROR]:', emailErr.message);
+        }
+
+        res.json({ message: 'Volunteered successfully! The hospital has been notified.', request });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -309,22 +461,136 @@ router.patch('/request/:requestId/volunteer/:username', async (req, res) => {
         const request = await BloodRequest.findById(requestId);
         if (!request) return res.status(404).json({ error: 'Request not found' });
 
-        const volunteer = request.volunteers.find(v => v.username === username);
+        const volunteer = request.volunteers.find(v => v.username.toLowerCase() === username.toLowerCase());
         if (!volunteer) return res.status(404).json({ error: 'Volunteer not found' });
 
         volunteer.status = status;
         await request.save();
+
+        // Helper: find donor's email
+        const getDonorEmail = async (uname) => {
+            const userAccount = await User.findOne({ username: new RegExp(`^${uname}$`, 'i') });
+            return userAccount?.email || null;
+        };
+
+        // Send ACCEPTANCE email to donor
+        if (status === 'Accepted') {
+            try {
+                const donorEmail = await getDonorEmail(username);
+                const donor = await Donor.findOne({ username: new RegExp(`^${username}$`, 'i') });
+                if (donorEmail) {
+                    console.log(`[ACCEPT] Sending acceptance email to ${username} at ${donorEmail}`);
+                    sendAcceptanceEmail(
+                        donorEmail,
+                        donor?.name || username,
+                        request.hospitalName || 'BloodLink Hospital',
+                        request.bloodGroup
+                    );
+                }
+            } catch (emailErr) {
+                console.error('[ACCEPTANCE EMAIL ERROR]:', emailErr.message);
+            }
+        }
         
-        // If status is 'Completed', also log it in the Donor's profile
+        // If status is 'Completed', log donation + send certificate email
         if (status === 'Completed') {
-             const donor = await Donor.findOne({ username });
+             const donor = await Donor.findOne({ username: new RegExp(`^${username}$`, 'i') });
+             const hospitalName = request.hospitalName || 'BloodLink Hospital';
+             const donationDate = new Date();
+
              if (donor) {
                  donor.donations.push({
-                     date: new Date(),
-                     hospitalName: request.hospitalName,
+                     date: donationDate,
+                     hospitalName: hospitalName,
                      status: 'Completed'
                  });
                  await donor.save();
+                 console.log(`[DONATION] Logged donation for ${username} at ${hospitalName}`);
+             } else {
+                 console.warn(`[DONATION] No donor profile found for ${username}, creating one...`);
+                 const userAccount = await User.findOne({ username: new RegExp(`^${username}$`, 'i') });
+                 if (userAccount) {
+                     const newDonor = new Donor({
+                         username: userAccount.username,
+                         name: userAccount.username,
+                         bloodGroup: request.bloodGroup || 'O+',
+                         contactInfo: userAccount.phone || 'N/A',
+                         age: 18,
+                         donations: [{
+                             date: donationDate,
+                             hospitalName: hospitalName,
+                             status: 'Completed'
+                         }]
+                     });
+                     await newDonor.save();
+                     console.log(`[DONATION] Created donor profile and logged donation for ${username}`);
+                 }
+             }
+
+             // Send certificate email to donor
+             try {
+                 const donorEmail = await getDonorEmail(username);
+                 const donorName = donor?.name || username;
+                 if (donorEmail) {
+                     console.log(`[CERTIFICATE] Sending certificate email to ${username} at ${donorEmail}`);
+                     sendCertificateEmail(
+                         donorEmail,
+                         donorName,
+                         hospitalName,
+                         donationDate,
+                         request.bloodGroup
+                     );
+                 }
+             } catch (emailErr) {
+                 console.error('[CERTIFICATE EMAIL ERROR]:', emailErr.message);
+             }
+
+             // Check if donor reached a new priority card tier → send card email
+             try {
+                 const freshDonor = await Donor.findOne({ username: new RegExp(`^${username}$`, 'i') });
+                 if (freshDonor && freshDonor.donations) {
+                     const hCounts = {};
+                     freshDonor.donations.forEach(d => {
+                         if (d.hospitalName) hCounts[d.hospitalName] = (hCounts[d.hospitalName] || 0) + 1;
+                     });
+                     const countAtHospital = hCounts[hospitalName] || 0;
+                     const tierMilestones = { 2: 'Silver', 5: 'Gold', 8: 'Elite' };
+                     const discounts = { 'Silver': '5%', 'Gold': '10%', 'Elite': '15%' };
+                     
+                     if (tierMilestones[countAtHospital]) {
+                         const newTier = tierMilestones[countAtHospital];
+                         const donorEmail = await getDonorEmail(username);
+                         if (donorEmail) {
+                             // Generate card number (same algo as frontend)
+                             let hash = 0;
+                             const str = `${username}-${hospitalName}-BLOODLINK`;
+                             for (let i = 0; i < str.length; i++) {
+                                 hash = ((hash << 5) - hash) + str.charCodeAt(i);
+                                 hash = hash & hash;
+                             }
+                             const num = Math.abs(hash);
+                             const p1 = String(num).slice(0, 4).padStart(4, '0');
+                             const p2 = String(num).slice(4, 8).padStart(4, '0');
+                             const p3 = String(num).slice(8, 12).padStart(4, '0');
+                             const check = (parseInt(p1) + parseInt(p2) + parseInt(p3)) % 97;
+                             const cardNumber = `BL-${p1}-${p2}-${p3}-${String(check).padStart(2, '0')}`;
+
+                             console.log(`[CARD] ${username} unlocked ${newTier} at ${hospitalName}! Sending card email...`);
+                             sendPriorityCardEmail(
+                                 donorEmail,
+                                 freshDonor.name || username,
+                                 hospitalName,
+                                 newTier,
+                                 cardNumber,
+                                 discounts[newTier],
+                                 countAtHospital,
+                                 freshDonor.bloodGroup || request.bloodGroup
+                             );
+                         }
+                     }
+                 }
+             } catch (cardErr) {
+                 console.error('[CARD EMAIL ERROR]:', cardErr.message);
              }
         }
 
@@ -345,4 +611,32 @@ router.get('/my-requests/:hospitalName', async (req, res) => {
     }
 });
 
+// Admin: Update request status
+router.patch('/admin/request/:id/status', async (req, res) => {
+    try {
+        const { status } = req.body;
+        const request = await BloodRequest.findByIdAndUpdate(
+            req.params.id,
+            { status },
+            { new: true }
+        );
+        if (!request) return res.status(404).json({ error: 'Request not found' });
+        res.json({ message: `Request marked as ${status}`, request });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: Delete a camp
+router.delete('/admin/camps/:id', async (req, res) => {
+    try {
+        const camp = await DonationCamp.findByIdAndDelete(req.params.id);
+        if (!camp) return res.status(404).json({ error: 'Camp not found' });
+        res.json({ message: 'Camp deleted successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;
+
