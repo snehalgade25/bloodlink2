@@ -209,9 +209,9 @@ const AdminDashboard = () => {
                                     <div className="space-y-8 animate-in fade-in duration-300">
                                         {/* Stat Cards */}
                                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                                            <StatCard icon={Users} label="Total Users" value={users.length} trend="Registered" color="text-purple-600" bg="bg-purple-50" />
-                                            <StatCard icon={HeartHandshake} label="Total Donors" value={stats?.totalDonors || 0} trend="Active" color="text-red-600" bg="bg-red-50" />
-                                            <StatCard icon={Hospital} label="Hospitals" value={stats?.totalHospitals || 0} trend="Registered" color="text-blue-600" bg="bg-blue-50" />
+                                            <button onClick={() => setActiveTab('users')} className="text-left w-full"><StatCard icon={Users} label="Total Users" value={users.length} trend="Registered" color="text-purple-600" bg="bg-purple-50" /></button>
+                                            <button onClick={() => setActiveTab('donors')} className="text-left w-full"><StatCard icon={HeartHandshake} label="Total Donors" value={stats?.totalDonors || 0} trend="Active" color="text-red-600" bg="bg-red-50" /></button>
+                                            <button onClick={() => setActiveTab('hospitals')} className="text-left w-full"><StatCard icon={Hospital} label="Hospitals" value={stats?.totalHospitals || 0} trend="Registered" color="text-blue-600" bg="bg-blue-50" /></button>
                                             <StatCard icon={AlertTriangle} label="Emergency Requests" value={stats?.emergencyRequests || 0} trend="Urgent" color="text-orange-600" bg="bg-orange-50" />
                                         </div>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

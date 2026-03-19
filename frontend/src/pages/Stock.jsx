@@ -154,7 +154,11 @@ const Stock = () => {
                                             </div>
                                         </td>
                                         <td className="px-8 py-6 text-right">
-                                            <button className="p-2 bg-gray-100 text-gray-400 rounded-lg group-hover:bg-red-600 group-hover:text-white transition-all">
+                                            <button 
+                                                onClick={() => window.open(`tel:${donor.contactInfo}`)}
+                                                className="p-2 bg-gray-100 text-gray-400 rounded-lg group-hover:bg-red-600 group-hover:text-white transition-all shadow-sm"
+                                                title={`Call ${donor.name}`}
+                                            >
                                                 <ArrowRight className="w-5 h-5" />
                                             </button>
                                         </td>

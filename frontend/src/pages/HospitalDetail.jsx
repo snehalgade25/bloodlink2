@@ -110,9 +110,9 @@ const HospitalDetail = () => {
                             <DetailedStock label="AB Positive" value={h.unitsAB} />
                         </div>
 
-                        <button className="w-full mt-8 bg-red-600 text-white font-bold py-3 rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-200">
+                        <Link to="/request" className="w-full mt-8 bg-red-600 text-white font-bold py-3 rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-200 flex items-center justify-center">
                             Request from this Hospital
-                        </button>
+                        </Link>
                     </div>
                 </div>
             </div>
