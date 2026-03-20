@@ -12,14 +12,25 @@ import {
     Hospital as HospitalIcon
 } from 'lucide-react';
 
+import { useLocation } from 'react-router-dom';
+
 const Volunteers = () => {
     const user = JSON.parse(sessionStorage.getItem('user'));
+    const location = useLocation();
+    const queryParams = new URLSearchParams(location.search);
+    const initialTab = queryParams.get('tab') || 'DONOR';
+
     const [requests, setRequests] = useState([]);
     const [loading, setLoading] = useState(true);
     const [hospitalProfile, setHospitalProfile] = useState(null);
-    const [supportType, setSupportType] = useState('DONOR');
+    const [supportType, setSupportType] = useState(initialTab);
     const [filter, setFilter] = useState('all');
     const [toast, setToast] = useState(null);
+
+    useEffect(() => {
+        const queryTab = new URLSearchParams(location.search).get('tab');
+        if (queryTab) setSupportType(queryTab);
+    }, [location.search]);
 
     useEffect(() => {
         const fetchData = async () => {

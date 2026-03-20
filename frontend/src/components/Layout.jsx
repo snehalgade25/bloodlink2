@@ -92,6 +92,7 @@ const Layout = () => {
                             setNewRequest({ 
                                 isVolunteer: true, 
                                 username: sortedVols[0].username,
+                                volunteerType: sortedVols[0].volunteerType,
                                 hospitalName: sortedVols[0].volunteerType === 'HOSPITAL' ? 'Hospital Support Response!' : 'New Donor Spotted!'
                             });
                         }
@@ -250,7 +251,7 @@ const Layout = () => {
                     </p>
 
                     <Link 
-                        to={newRequest.isVolunteer ? "/volunteers" : (user.role === 'HOSPITAL' ? "/hospital-requests" : "/emergency-requests")}
+                        to={newRequest.isVolunteer ? `/volunteers?tab=${newRequest.volunteerType || 'DONOR'}` : (user.role === 'HOSPITAL' ? "/hospital-requests" : "/emergency-requests")}
                         onClick={() => setNewRequest(null)}
                         className="w-full flex items-center justify-center space-x-3 py-4 bg-gray-900 text-white rounded-xl font-black text-xs uppercase tracking-[0.2em] hover:bg-black transition-all shadow-lg active:scale-95 group"
                     >
