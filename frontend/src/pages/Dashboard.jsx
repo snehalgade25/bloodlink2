@@ -114,15 +114,28 @@ const Dashboard = () => {
             setProfile(res.data);
             
             // Also fetch matching requests for the dashboard
-            const encodedBloodGroup = encodeURIComponent(res.data.bloodGroup);
-            const matchingRes = await axios.get('http://localhost:5000/api/requests/all');
-            const allRequests = matchingRes.data || [];
-            
-            // Filter by matching blood group AND not already volunteered
-            const matching = allRequests.filter(r => 
-                r.bloodGroup === res.data.bloodGroup && 
-                !r.volunteers?.some(v => v.username === user.username)
-            );
+            // BUT SKIP IF IN REST PERIOD (90 days)
+            let matching = [];
+            const donor = res.data;
+            let isBuffer = false;
+
+            if (donor.donations && donor.donations.length > 0) {
+                const sorted = [...donor.donations].sort((a,b) => new Date(b.date) - new Date(a.date));
+                const lastDate = new Date(sorted[0].date);
+                const bufferEnds = new Date(lastDate.getTime() + 90 * 24 * 60 * 60 * 1000);
+                if (new Date() < bufferEnds) isBuffer = true;
+            }
+
+            if (!isBuffer) {
+                const matchingRes = await axios.get('http://localhost:5000/api/requests/all');
+                const allRequests = matchingRes.data || [];
+                
+                // Filter by matching blood group AND not already volunteered
+                matching = allRequests.filter(r => 
+                    r.bloodGroup === donor.bloodGroup && 
+                    !r.volunteers?.some(v => v.username === user.username)
+                );
+            }
             setMatchingRequests(matching);
         } catch (err) {
             console.error('Error fetching profile/requests:', err);

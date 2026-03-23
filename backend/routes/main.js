@@ -248,12 +248,21 @@ router.post('/request', async (req, res) => {
 
         // 2. Broadcast Notifications (Async)
         // Find matching donors (case-insensitive)
-        const matchingDonors = await Donor.find({
+        const allMatchingDonors = await Donor.find({
             bloodGroup: { $regex: new RegExp(`^${bloodGroup.replace('+', '\\+')}$`, 'i') }
         });
 
+        // Filter out donors in rest period (90 days)
+        const matchingDonors = allMatchingDonors.filter(donor => {
+            if (!donor.donations || donor.donations.length === 0) return true;
+            const sortedDonations = [...donor.donations].sort((a, b) => new Date(b.date) - new Date(a.date));
+            const lastDonation = new Date(sortedDonations[0].date);
+            const bufferEnds = new Date(lastDonation.getTime() + 90 * 24 * 60 * 60 * 1000);
+            return new Date() >= bufferEnds;
+        });
+
         const usernames = matchingDonors.map(d => d.username);
-        console.log(`[BROADCAST] Found ${matchingDonors.length} matching donor profiles.`);
+        console.log(`[BROADCAST] Found ${matchingDonors.length} eligible donor profiles (excluding rest periods).`);
 
         if (usernames.length > 0) {
             // Find users to get emails

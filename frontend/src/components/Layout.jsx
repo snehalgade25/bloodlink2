@@ -51,7 +51,19 @@ const Layout = () => {
                         setDonorInfo(currentDonor);
                     }
 
-                    // 2. Check for matching requests
+                    // 2. CHECK REST PERIOD (90 days)
+                    if (currentDonor.donations && currentDonor.donations.length > 0) {
+                        const sortedDonations = [...currentDonor.donations].sort((a,b) => new Date(b.date) - new Date(a.date));
+                        const lastDonation = new Date(sortedDonations[0].date);
+                        const bufferEnds = new Date(lastDonation.getTime() + 90 * 24 * 60 * 60 * 1000);
+                        if (new Date() < bufferEnds) {
+                            // SKIP checking for requests if still in rest period
+                            console.log("[LAYOUT] Skipping broadcast check - Rest Period Active");
+                            return;
+                        }
+                    }
+
+                    // 3. Check for matching requests
                     const requestsRes = await axios.get(`http://localhost:5000/api/matching-requests/${currentDonor.bloodGroup}`);
                     const requests = requestsRes.data;
 

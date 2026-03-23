@@ -116,7 +116,24 @@ const EmergencyRequests = () => {
                 </div>
             </div>
 
-            {sortedRequests.length === 0 ? (
+            {isBufferActive ? (
+                <div className="bg-gradient-to-br from-yellow-50 to-orange-50 border-2 border-yellow-200 rounded-[2.5rem] p-12 text-center shadow-sm relative overflow-hidden">
+                    <div className="absolute -right-10 -top-10 w-40 h-40 bg-yellow-200/30 rounded-full blur-3xl"></div>
+                    <div className="relative z-10">
+                        <div className="w-20 h-20 bg-white rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-md border border-yellow-100">
+                            <Clock className="w-10 h-10 text-yellow-600" />
+                        </div>
+                        <h3 className="text-2xl font-black text-yellow-800 uppercase tracking-tight mb-2">Rest Period Active</h3>
+                        <p className="text-yellow-700/80 font-bold max-w-sm mx-auto mb-8 leading-relaxed">
+                            To ensure your own health and wellbeing, the system has temporarily paused emergency broadcasts in your account. 
+                            You'll be eligible to receive and respond to requests again in <strong className="text-yellow-900">{daysLeft} days</strong>.
+                        </p>
+                        <div className="bg-white/50 backdrop-blur-sm border border-yellow-200/50 rounded-2xl px-6 py-4 inline-block">
+                             <p className="text-xs font-black text-yellow-800 uppercase tracking-[0.2em]">Next Eligibility Date: {bufferEndDate?.toLocaleDateString()}</p>
+                        </div>
+                    </div>
+                </div>
+            ) : sortedRequests.length === 0 ? (
                 <div className="bg-white border-2 border-dashed border-gray-100 rounded-[2.5rem] p-16 text-center shadow-sm">
                     <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-6">
                         <Heart className="w-10 h-10 text-gray-200" />
